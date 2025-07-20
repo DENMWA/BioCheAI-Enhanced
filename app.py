@@ -70,7 +70,10 @@ os.makedirs('models', exist_ok=True)
 db = SQLAlchemy(app)
 migrate = Migrate(app, db)
 jwt = JWTManager(app)
-limiter = Limiter(app, key_func=get_remote_address)
+limiter = Limiter(
+    key_func=get_remote_address,
+    app=app
+)
 
 # CORS configuration
 CORS(app, origins=["http://localhost:3000", "https://yourdomain.github.io"])
@@ -963,7 +966,7 @@ def register():
         db.session.commit()
         
         # Create access token
-        access_token = create_access_token(identity=user.id)
+        access_token = create_access_token(identity=str(user.id))
         
         return jsonify({
             'message': 'User created successfully',
@@ -991,7 +994,7 @@ def login():
             user.last_login = datetime.utcnow()
             db.session.commit()
             
-            access_token = create_access_token(identity=user.id)
+            access_token = create_access_token(identity=str(user.id))
             
             return jsonify({
                 'message': 'Login successful',
@@ -1011,7 +1014,7 @@ def login():
 def create_analysis():
     """Create new analysis"""
     try:
-        user_id = get_jwt_identity()
+        user_id = int(get_jwt_identity())
         data = request.get_json()
         
         # Validate input
@@ -1055,7 +1058,7 @@ def create_analysis():
 def fetch_external_data():
     """Fetch data from external repositories"""
     try:
-        user_id = get_jwt_identity()
+        user_id = int(get_jwt_identity())
         data = request.get_json()
         
         repository = data.get('repository')
@@ -1129,7 +1132,7 @@ def get_supported_repositories():
 def repair_analysis_data(analysis_id):
     """Manually trigger data repair for an analysis"""
     try:
-        user_id = get_jwt_identity()
+        user_id = int(get_jwt_identity())
         analysis = Analysis.query.filter_by(id=analysis_id, user_id=user_id).first()
         
         if not analysis:
@@ -1164,7 +1167,7 @@ def repair_analysis_data(analysis_id):
 def get_analysis(analysis_id):
     """Get analysis details"""
     try:
-        user_id = get_jwt_identity()
+        user_id = int(get_jwt_identity())
         analysis = Analysis.query.filter_by(id=analysis_id, user_id=user_id).first()
         
         if not analysis:
@@ -1186,7 +1189,7 @@ def get_analysis(analysis_id):
 def get_user_analyses():
     """Get all analyses for the current user"""
     try:
-        user_id = get_jwt_identity()
+        user_id = int(get_jwt_identity())
         page = request.args.get('page', 1, type=int)
         per_page = request.args.get('per_page', 10, type=int)
         
