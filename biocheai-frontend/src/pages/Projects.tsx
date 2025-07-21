@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { projectApi, collaborationApi } from '../lib/api';
 import { useAuth } from '../contexts/AuthContext';
@@ -33,6 +34,7 @@ const Projects: React.FC = () => {
     is_public: false,
   });
   const { user } = useAuth();
+  const navigate = useNavigate();
   const queryClient = useQueryClient();
 
   const { data: projects = [], isLoading } = useQuery({
@@ -252,6 +254,9 @@ const Projects: React.FC = () => {
                           Collaborate
                         </>
                       )}
+                    </Button>
+                    <Button size="sm" variant="outline" onClick={() => navigate(`/projects/${project.id}/manage`)}>
+                      <Calendar className="h-4 w-4" />
                     </Button>
                     <Button size="sm" variant="outline">
                       <Settings className="h-4 w-4" />

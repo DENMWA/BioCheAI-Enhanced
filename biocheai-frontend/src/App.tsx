@@ -10,6 +10,7 @@ import Dashboard from './pages/Dashboard';
 import DataFetching from './pages/DataFetching';
 import Literature from './pages/Literature';
 import Projects from './pages/Projects';
+import ProjectManagement from './pages/ProjectManagement';
 import Workflows from './pages/Workflows';
 import DataIntegration from './pages/DataIntegration';
 import Compliance from './pages/Compliance';
@@ -86,6 +87,7 @@ function App() {
                         <Route path="/data-fetching" element={<DataFetching />} />
                         <Route path="/literature" element={<Literature />} />
                         <Route path="/projects" element={<Projects />} />
+                        <Route path="/projects/:projectId/manage" element={<ProjectManagement />} />
                         <Route path="/workflows" element={<Workflows />} />
                         <Route path="/data-integration" element={<DataIntegration />} />
                         <Route path="/compliance" element={<Compliance />} />

@@ -1,5 +1,5 @@
 import axios from 'axios';
-import { User, Analysis, Project, LiteratureResult, Workflow, DataSource, ComplianceReport, Repository } from '../types';
+import { User, Analysis, Project, LiteratureResult, Workflow, DataSource, ComplianceReport, Repository, Task, Milestone, TimelineData } from '../types';
 
 const API_BASE_URL = (import.meta as any).env.VITE_API_BASE_URL || 'http://localhost:5000/api';
 
@@ -187,6 +187,36 @@ export const cloudApi = {
 
   getStatus: async (): Promise<any> => {
     const response = await api.get('/cloud/status');
+    return response.data;
+  },
+};
+
+export const taskApi = {
+  create: async (projectId: string, taskData: any): Promise<Task> => {
+    const response = await api.post(`/projects/${projectId}/tasks`, taskData);
+    return response.data;
+  },
+
+  getAll: async (projectId: string): Promise<Task[]> => {
+    const response = await api.get(`/projects/${projectId}/tasks`);
+    return response.data.tasks;
+  },
+
+  updateProgress: async (taskId: string, progress: number, actualHours?: number): Promise<void> => {
+    await api.put(`/tasks/${taskId}/progress`, { progress, actual_hours: actualHours });
+  },
+};
+
+export const milestoneApi = {
+  create: async (projectId: string, milestoneData: any): Promise<Milestone> => {
+    const response = await api.post(`/projects/${projectId}/milestones`, milestoneData);
+    return response.data;
+  },
+};
+
+export const timelineApi = {
+  getProjectTimeline: async (projectId: string): Promise<TimelineData> => {
+    const response = await api.get(`/projects/${projectId}/timeline`);
     return response.data;
   },
 };

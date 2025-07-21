@@ -273,6 +273,66 @@ class Comment(db.Model):
     
     replies = db.relationship('Comment', backref=db.backref('parent', remote_side='Comment.id'), lazy=True)
 
+class Task(db.Model):
+    """Task model for project management"""
+    id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    project_id = db.Column(db.String(36), db.ForeignKey('project.id'), nullable=False)
+    title = db.Column(db.String(200), nullable=False)
+    description = db.Column(db.Text)
+    status = db.Column(db.String(20), default='todo')  # todo, in_progress, completed, blocked
+    priority = db.Column(db.String(10), default='medium')  # low, medium, high, critical
+    start_date = db.Column(db.DateTime, nullable=False)
+    end_date = db.Column(db.DateTime, nullable=False)
+    estimated_hours = db.Column(db.Float, default=0)
+    actual_hours = db.Column(db.Float, default=0)
+    progress_percentage = db.Column(db.Integer, default=0)
+    parent_task_id = db.Column(db.String(36), db.ForeignKey('task.id'))
+    created_by = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # Relationships
+    subtasks = db.relationship('Task', backref=db.backref('parent_task', remote_side='Task.id'), lazy=True)
+    assignments = db.relationship('TaskAssignment', backref='task', lazy=True, cascade='all, delete-orphan')
+    dependencies = db.relationship('TaskDependency', foreign_keys='TaskDependency.task_id', backref='task', lazy=True)
+
+class TaskAssignment(db.Model):
+    """Task assignment to users with resource allocation"""
+    id = db.Column(db.Integer, primary_key=True)
+    task_id = db.Column(db.String(36), db.ForeignKey('task.id'), nullable=False)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    role = db.Column(db.String(50), default='assignee')  # assignee, reviewer, observer
+    hours_allocated = db.Column(db.Float, default=0)
+    capacity_percentage = db.Column(db.Integer, default=100)
+    assigned_at = db.Column(db.DateTime, default=datetime.utcnow)
+    
+    __table_args__ = (db.UniqueConstraint('task_id', 'user_id'),)
+
+class TaskDependency(db.Model):
+    """Task dependencies for Gantt chart scheduling"""
+    id = db.Column(db.Integer, primary_key=True)
+    task_id = db.Column(db.String(36), db.ForeignKey('task.id'), nullable=False)
+    depends_on_task_id = db.Column(db.String(36), db.ForeignKey('task.id'), nullable=False)
+    dependency_type = db.Column(db.String(20), default='finish_to_start')  # finish_to_start, start_to_start, finish_to_finish, start_to_finish
+    lag_days = db.Column(db.Integer, default=0)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    
+    __table_args__ = (db.UniqueConstraint('task_id', 'depends_on_task_id'),)
+
+class Milestone(db.Model):
+    """Project milestones for timeline tracking"""
+    id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    project_id = db.Column(db.String(36), db.ForeignKey('project.id'), nullable=False)
+    title = db.Column(db.String(200), nullable=False)
+    description = db.Column(db.Text)
+    due_date = db.Column(db.DateTime, nullable=False)
+    status = db.Column(db.String(20), default='pending')  # pending, achieved, overdue
+    completion_percentage = db.Column(db.Integer, default=0)
+    linked_tasks = db.Column(db.JSON, default=list)  # List of task IDs
+    created_by = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    achieved_at = db.Column(db.DateTime)
+
 class Workflow(db.Model):
     """Workflow model for no-code analysis pipelines"""
     id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
@@ -1883,6 +1943,156 @@ class CloudEngine:
             return {'error': str(e)}
 
 
+# =========================== PROJECT MANAGEMENT ENGINE ===========================
+
+class ProjectManagementEngine:
+    """Enhanced project management with Gantt charts and timeline features"""
+    
+    def __init__(self, socketio_instance):
+        self.socketio = socketio_instance
+    
+    def create_task(self, project_id, title, description, start_date, end_date, created_by, **kwargs):
+        """Create a new task with optional dependencies"""
+        task = Task(
+            project_id=project_id,
+            title=title,
+            description=description,
+            start_date=start_date,
+            end_date=end_date,
+            created_by=created_by,
+            status=kwargs.get('status', 'todo'),
+            priority=kwargs.get('priority', 'medium'),
+            estimated_hours=kwargs.get('estimated_hours', 0),
+            parent_task_id=kwargs.get('parent_task_id')
+        )
+        db.session.add(task)
+        db.session.commit()
+        
+        if kwargs.get('dependencies'):
+            for dep_task_id in kwargs['dependencies']:
+                dependency = TaskDependency(
+                    task_id=task.id,
+                    depends_on_task_id=dep_task_id,
+                    dependency_type=kwargs.get('dependency_type', 'finish_to_start')
+                )
+                db.session.add(dependency)
+        
+        if kwargs.get('assignees'):
+            for user_id in kwargs['assignees']:
+                assignment = TaskAssignment(
+                    task_id=task.id,
+                    user_id=user_id,
+                    hours_allocated=kwargs.get('hours_allocated', 0)
+                )
+                db.session.add(assignment)
+        
+        db.session.commit()
+        
+        self.socketio.emit('task_created', {
+            'task_id': task.id,
+            'project_id': project_id,
+            'title': title,
+            'timestamp': datetime.utcnow().isoformat()
+        }, room=f"project_{project_id}")
+        
+        return task.id
+    
+    def update_task_progress(self, task_id, progress_percentage, actual_hours=None):
+        """Update task progress and broadcast to collaborators"""
+        task = Task.query.get(task_id)
+        if not task:
+            return False
+        
+        task.progress_percentage = progress_percentage
+        if actual_hours is not None:
+            task.actual_hours = actual_hours
+        
+        if progress_percentage == 100:
+            task.status = 'completed'
+        elif progress_percentage > 0:
+            task.status = 'in_progress'
+        
+        task.updated_at = datetime.utcnow()
+        db.session.commit()
+        
+        self.socketio.emit('task_updated', {
+            'task_id': task_id,
+            'project_id': task.project_id,
+            'progress': progress_percentage,
+            'status': task.status,
+            'timestamp': datetime.utcnow().isoformat()
+        }, room=f"project_{task.project_id}")
+        
+        return True
+    
+    def create_milestone(self, project_id, title, due_date, created_by, **kwargs):
+        """Create a project milestone"""
+        milestone = Milestone(
+            project_id=project_id,
+            title=title,
+            due_date=due_date,
+            created_by=created_by,
+            description=kwargs.get('description'),
+            linked_tasks=kwargs.get('linked_tasks', [])
+        )
+        db.session.add(milestone)
+        db.session.commit()
+        
+        self.socketio.emit('milestone_created', {
+            'milestone_id': milestone.id,
+            'project_id': project_id,
+            'title': title,
+            'due_date': due_date.isoformat(),
+            'timestamp': datetime.utcnow().isoformat()
+        }, room=f"project_{project_id}")
+        
+        return milestone.id
+    
+    def get_project_timeline(self, project_id):
+        """Get comprehensive project timeline data for Gantt chart"""
+        tasks = Task.query.filter_by(project_id=project_id).all()
+        milestones = Milestone.query.filter_by(project_id=project_id).all()
+        
+        timeline_data = {
+            'tasks': [],
+            'milestones': [],
+            'dependencies': []
+        }
+        
+        for task in tasks:
+            task_data = {
+                'id': task.id,
+                'title': task.title,
+                'start_date': task.start_date.isoformat(),
+                'end_date': task.end_date.isoformat(),
+                'progress_percentage': task.progress_percentage,
+                'status': task.status,
+                'priority': task.priority,
+                'assignees': [{'user_id': a.user_id, 'hours_allocated': a.hours_allocated} for a in task.assignments],
+                'dependencies': []
+            }
+            timeline_data['tasks'].append(task_data)
+            
+            for dep in task.dependencies:
+                timeline_data['dependencies'].append({
+                    'task_id': task.id,
+                    'depends_on_task_id': dep.depends_on_task_id,
+                    'dependency_type': dep.dependency_type
+                })
+        
+        for milestone in milestones:
+            milestone_data = {
+                'id': milestone.id,
+                'title': milestone.title,
+                'due_date': milestone.due_date.isoformat(),
+                'status': milestone.status,
+                'completion_percentage': milestone.completion_percentage
+            }
+            timeline_data['milestones'].append(milestone_data)
+        
+        return timeline_data
+
+
 # Initialize all engines
 ml_engine = BioCheAIMLEngine()
 ai_police = AIPoliceEngine()
@@ -1894,6 +2104,7 @@ workflow_engine = WorkflowBuilderEngine()
 multimodal_engine = MultiModalEngine()
 regulatory_engine = RegulatoryEngine()
 cloud_engine = CloudEngine()
+project_management_engine = ProjectManagementEngine(socketio)
 
 # =========================== HELPER FUNCTIONS ===========================
 
@@ -2417,6 +2628,151 @@ def create_collaboration_session():
         logger.error(f"Collaboration session error: {str(e)}")
         return jsonify({'error': 'Session creation failed'}), 500
 
+
+# ========================= PROJECT MANAGEMENT API ENDPOINTS =========================
+
+@app.route('/api/projects/<project_id>/tasks', methods=['POST'])
+@jwt_required()
+@limiter.limit("30 per hour")
+def create_task(project_id):
+    """Create a new task in a project"""
+    try:
+        user_id = int(get_jwt_identity())
+        data = request.get_json()
+        
+        title = data.get('title')
+        start_date = datetime.fromisoformat(data.get('start_date'))
+        end_date = datetime.fromisoformat(data.get('end_date'))
+        
+        if not all([title, start_date, end_date]):
+            return jsonify({'error': 'Title, start_date, and end_date are required'}), 400
+        
+        task_id = project_management_engine.create_task(
+            project_id=project_id,
+            title=title,
+            description=data.get('description'),
+            start_date=start_date,
+            end_date=end_date,
+            created_by=user_id,
+            status=data.get('status', 'todo'),
+            priority=data.get('priority', 'medium'),
+            estimated_hours=data.get('estimated_hours', 0),
+            parent_task_id=data.get('parent_task_id'),
+            dependencies=data.get('dependencies', []),
+            assignees=data.get('assignees', [])
+        )
+        
+        return jsonify({
+            'status': 'success',
+            'task_id': task_id
+        }), 201
+        
+    except Exception as e:
+        logger.error(f"Task creation error: {str(e)}")
+        return jsonify({'error': 'Task creation failed'}), 500
+
+@app.route('/api/projects/<project_id>/tasks', methods=['GET'])
+@jwt_required()
+def get_project_tasks(project_id):
+    """Get all tasks for a project"""
+    try:
+        tasks = Task.query.filter_by(project_id=project_id).all()
+        
+        task_list = []
+        for task in tasks:
+            task_data = {
+                'id': task.id,
+                'title': task.title,
+                'description': task.description,
+                'status': task.status,
+                'priority': task.priority,
+                'start_date': task.start_date.isoformat(),
+                'end_date': task.end_date.isoformat(),
+                'progress_percentage': task.progress_percentage,
+                'estimated_hours': task.estimated_hours,
+                'actual_hours': task.actual_hours,
+                'assignees': [{'user_id': a.user_id, 'hours_allocated': a.hours_allocated} for a in task.assignments],
+                'dependencies': [{'depends_on_task_id': d.depends_on_task_id, 'dependency_type': d.dependency_type} for d in task.dependencies]
+            }
+            task_list.append(task_data)
+        
+        return jsonify({
+            'tasks': task_list,
+            'total': len(task_list)
+        })
+        
+    except Exception as e:
+        logger.error(f"Get tasks error: {str(e)}")
+        return jsonify({'error': 'Failed to get tasks'}), 500
+
+@app.route('/api/tasks/<task_id>/progress', methods=['PUT'])
+@jwt_required()
+def update_task_progress(task_id):
+    """Update task progress"""
+    try:
+        data = request.get_json()
+        progress = data.get('progress', 0)
+        actual_hours = data.get('actual_hours')
+        
+        success = project_management_engine.update_task_progress(
+            task_id=task_id,
+            progress_percentage=progress,
+            actual_hours=actual_hours
+        )
+        
+        if success:
+            return jsonify({'status': 'success'})
+        else:
+            return jsonify({'error': 'Task not found'}), 404
+            
+    except Exception as e:
+        logger.error(f"Task progress update error: {str(e)}")
+        return jsonify({'error': 'Progress update failed'}), 500
+
+@app.route('/api/projects/<project_id>/milestones', methods=['POST'])
+@jwt_required()
+def create_milestone(project_id):
+    """Create a project milestone"""
+    try:
+        user_id = int(get_jwt_identity())
+        data = request.get_json()
+        
+        title = data.get('title')
+        due_date = datetime.fromisoformat(data.get('due_date'))
+        
+        if not all([title, due_date]):
+            return jsonify({'error': 'Title and due_date are required'}), 400
+        
+        milestone_id = project_management_engine.create_milestone(
+            project_id=project_id,
+            title=title,
+            due_date=due_date,
+            created_by=user_id,
+            description=data.get('description'),
+            linked_tasks=data.get('linked_tasks', [])
+        )
+        
+        return jsonify({
+            'status': 'success',
+            'milestone_id': milestone_id
+        }), 201
+        
+    except Exception as e:
+        logger.error(f"Milestone creation error: {str(e)}")
+        return jsonify({'error': 'Milestone creation failed'}), 500
+
+@app.route('/api/projects/<project_id>/timeline', methods=['GET'])
+@jwt_required()
+def get_project_timeline(project_id):
+    """Get comprehensive project timeline for Gantt chart"""
+    try:
+        timeline_data = project_management_engine.get_project_timeline(project_id)
+        return jsonify(timeline_data)
+        
+    except Exception as e:
+        logger.error(f"Timeline data error: {str(e)}")
+        return jsonify({'error': 'Failed to get timeline data'}), 500
+
 @app.route('/api/workflows', methods=['POST'])
 @jwt_required()
 @limiter.limit("20 per hour")
@@ -2688,6 +3044,39 @@ def handle_comment_added(data):
             'content': comment.content,
             'timestamp': comment.created_at.isoformat()
         }, room=session_id)
+
+@socketio.on('join_project')
+def handle_join_project(data):
+    """Handle user joining project room for real-time updates"""
+    project_id = data.get('project_id')
+    user_id = data.get('user_id')
+    
+    if project_id and user_id:
+        join_room(f"project_{project_id}")
+        emit('project_joined', {
+            'user_id': user_id,
+            'project_id': project_id,
+            'timestamp': datetime.utcnow().isoformat()
+        }, room=f"project_{project_id}")
+
+@socketio.on('task_progress_update')
+def handle_task_progress_update(data):
+    """Handle real-time task progress updates"""
+    task_id = data.get('task_id')
+    progress = data.get('progress')
+    user_id = data.get('user_id')
+    
+    if task_id and progress is not None:
+        success = project_management_engine.update_task_progress(task_id, progress)
+        if success:
+            task = Task.query.get(task_id)
+            emit('task_progress_updated', {
+                'task_id': task_id,
+                'progress': progress,
+                'status': task.status,
+                'updated_by': user_id,
+                'timestamp': datetime.utcnow().isoformat()
+            }, room=f"project_{task.project_id}")
 
 if __name__ == '__main__':
     with app.app_context():

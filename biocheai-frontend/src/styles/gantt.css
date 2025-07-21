@@ -1,0 +1,57 @@
+/* Gantt Chart Custom Styles */
+.gantt-container {
+  overflow-x: auto;
+  padding: 20px 0;
+}
+
+.gantt .bar-wrapper .bar {
+  border-radius: 4px;
+}
+
+.gantt .bar-wrapper .bar.priority-high {
+  fill: #ef4444;
+}
+
+.gantt .bar-wrapper .bar.priority-medium {
+  fill: #3b82f6;
+}
+
+.gantt .bar-wrapper .bar.priority-low {
+  fill: #10b981;
+}
+
+.gantt .bar-wrapper .bar.priority-critical {
+  fill: #dc2626;
+  stroke: #991b1b;
+  stroke-width: 2px;
+}
+
+.gantt .bar-wrapper .bar.status-completed {
+  fill: #22c55e;
+}
+
+.gantt .bar-wrapper .bar.status-in_progress {
+  fill: #f59e0b;
+}
+
+.gantt .bar-wrapper .bar.status-blocked {
+  fill: #ef4444;
+  opacity: 0.7;
+}
+
+.gantt .grid-row {
+  fill: none;
+  stroke: #e5e7eb;
+  stroke-width: 1px;
+}
+
+.gantt .grid-header {
+  fill: #f9fafb;
+  stroke: #d1d5db;
+  stroke-width: 1px;
+}
+
+.gantt .today-highlight {
+  fill: #fef3c7;
+  opacity: 0.5;
+}

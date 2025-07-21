@@ -137,3 +137,62 @@ export interface WebSocketMessage {
   data: any;
   timestamp: string;
 }
+
+export interface Task {
+  id: string;
+  project_id: string;
+  title: string;
+  description?: string;
+  status: 'todo' | 'in_progress' | 'completed' | 'blocked';
+  priority: 'low' | 'medium' | 'high' | 'critical';
+  start_date: string;
+  end_date: string;
+  estimated_hours: number;
+  actual_hours: number;
+  progress_percentage: number;
+  parent_task_id?: string;
+  created_by: number;
+  created_at: string;
+  updated_at: string;
+  assignees: TaskAssignment[];
+  dependencies: TaskDependency[];
+}
+
+export interface TaskAssignment {
+  id: number;
+  task_id: string;
+  user_id: number;
+  role: string;
+  hours_allocated: number;
+  capacity_percentage: number;
+  assigned_at: string;
+}
+
+export interface TaskDependency {
+  id: number;
+  task_id: string;
+  depends_on_task_id: string;
+  dependency_type: 'finish_to_start' | 'start_to_start' | 'finish_to_finish' | 'start_to_finish';
+  lag_days: number;
+  created_at: string;
+}
+
+export interface Milestone {
+  id: string;
+  project_id: string;
+  title: string;
+  description?: string;
+  due_date: string;
+  status: 'pending' | 'achieved' | 'overdue';
+  completion_percentage: number;
+  linked_tasks: string[];
+  created_by: number;
+  created_at: string;
+  achieved_at?: string;
+}
+
+export interface TimelineData {
+  tasks: Task[];
+  milestones: Milestone[];
+  dependencies: TaskDependency[];
+}
