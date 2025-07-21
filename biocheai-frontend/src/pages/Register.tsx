@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
@@ -54,6 +54,11 @@ const Register: React.FC = () => {
     } finally {
       setIsLoading(false);
     }
+  };
+
+  const handleSignInClick = (e: React.MouseEvent) => {
+    e.preventDefault();
+    navigate('/login');
   };
 
   return (
@@ -180,9 +185,12 @@ const Register: React.FC = () => {
             <div className="mt-6 text-center">
               <p className="text-sm text-gray-600">
                 Already have an account?{' '}
-                <Link to="/login" className="font-medium text-blue-600 hover:text-blue-500">
+                <button
+                  onClick={handleSignInClick}
+                  className="font-medium text-blue-600 hover:text-blue-500 underline bg-transparent border-none cursor-pointer"
+                >
                   Sign in
-                </Link>
+                </button>
               </p>
             </div>
           </CardContent>
