@@ -16,15 +16,17 @@ const GanttChart: React.FC<GanttChartProps> = ({
   onTaskClick, 
   onTaskUpdate 
 }) => {
-  const ganttTasks = timelineData.tasks.map(task => ({
-    id: task.id,
-    name: task.title,
-    start: task.start_date,
-    end: task.end_date,
-    progress: task.progress_percentage,
-    dependencies: task.dependencies.map(dep => dep.depends_on_task_id).join(','),
-    custom_class: `priority-${task.priority} status-${task.status}`,
-  }));
+  const ganttTasks = timelineData.tasks
+    .filter(task => task.start_date && task.end_date)
+    .map(task => ({
+      id: task.id,
+      name: task.title,
+      start: task.start_date,
+      end: task.end_date,
+      progress: task.progress_percentage || 0,
+      dependencies: task.dependencies?.map(dep => dep.depends_on_task_id).join(',') || '',
+      custom_class: `priority-${task.priority} status-${task.status}`,
+    }));
 
   const handleTaskChange = (task: any) => {
     if (onTaskUpdate) {
@@ -50,12 +52,22 @@ const GanttChart: React.FC<GanttChartProps> = ({
         </CardHeader>
         <CardContent>
           <div className="gantt-container">
-            <FrappeGantt
-              tasks={ganttTasks}
-              viewMode="Month"
-              onClick={handleTaskClick}
-              onDateChange={handleTaskChange}
-            />
+            {ganttTasks.length > 0 ? (
+              <FrappeGantt
+                tasks={ganttTasks}
+                viewMode="Month"
+                onClick={handleTaskClick}
+                onDateChange={handleTaskChange}
+              />
+            ) : (
+              <div className="text-center py-8">
+                <Calendar className="mx-auto h-12 w-12 text-gray-400" />
+                <h3 className="mt-2 text-sm font-medium text-gray-900">No tasks yet</h3>
+                <p className="mt-1 text-sm text-gray-500">
+                  Create tasks to visualize your project timeline
+                </p>
+              </div>
+            )}
           </div>
         </CardContent>
       </Card>
@@ -70,30 +82,42 @@ const GanttChart: React.FC<GanttChartProps> = ({
         </CardHeader>
         <CardContent>
           <div className="space-y-3">
-            {timelineData.milestones.map(milestone => (
-              <div key={milestone.id} className="flex items-center justify-between p-3 border rounded-lg">
-                <div className="flex items-center space-x-3">
-                  <div className={`w-3 h-3 rounded-full ${
-                    milestone.status === 'achieved' ? 'bg-green-500' :
-                    milestone.status === 'overdue' ? 'bg-red-500' : 'bg-yellow-500'
-                  }`} />
-                  <div>
-                    <h4 className="font-medium">{milestone.title}</h4>
-                    <p className="text-sm text-gray-500">
-                      Due: {new Date(milestone.due_date).toLocaleDateString()}
-                    </p>
+            {timelineData.milestones && timelineData.milestones.length > 0 ? (
+              timelineData.milestones
+                .filter(milestone => milestone.due_date)
+                .map(milestone => (
+                  <div key={milestone.id} className="flex items-center justify-between p-3 border rounded-lg">
+                    <div className="flex items-center space-x-3">
+                      <div className={`w-3 h-3 rounded-full ${
+                        milestone.status === 'achieved' ? 'bg-green-500' :
+                        milestone.status === 'overdue' ? 'bg-red-500' : 'bg-yellow-500'
+                      }`} />
+                      <div>
+                        <h4 className="font-medium">{milestone.title}</h4>
+                        <p className="text-sm text-gray-500">
+                          Due: {new Date(milestone.due_date).toLocaleDateString()}
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex items-center space-x-2">
+                      <Badge variant={milestone.status === 'achieved' ? 'default' : 'secondary'}>
+                        {milestone.completion_percentage || 0}% Complete
+                      </Badge>
+                      <Badge variant="outline">
+                        {milestone.status}
+                      </Badge>
+                    </div>
                   </div>
-                </div>
-                <div className="flex items-center space-x-2">
-                  <Badge variant={milestone.status === 'achieved' ? 'default' : 'secondary'}>
-                    {milestone.completion_percentage}% Complete
-                  </Badge>
-                  <Badge variant="outline">
-                    {milestone.status}
-                  </Badge>
-                </div>
+                ))
+            ) : (
+              <div className="text-center py-8">
+                <Clock className="mx-auto h-12 w-12 text-gray-400" />
+                <h3 className="mt-2 text-sm font-medium text-gray-900">No milestones yet</h3>
+                <p className="mt-1 text-sm text-gray-500">
+                  Create milestones to track important project deadlines
+                </p>
               </div>
-            ))}
+            )}
           </div>
         </CardContent>
       </Card>
