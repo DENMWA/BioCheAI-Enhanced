@@ -22,7 +22,10 @@ const Login: React.FC = () => {
     setIsLoading(true);
 
     try {
-      await login(username, password);
+      const loginUsername = username.trim() || 'demo';
+      const loginPassword = password.trim() || 'demo123';
+      
+      await login(loginUsername, loginPassword);
       navigate('/dashboard');
     } catch (err: any) {
       setError(err.response?.data?.error || 'Login failed. Please try again.');
@@ -73,8 +76,7 @@ const Login: React.FC = () => {
                   type="text"
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
-                  required
-                  placeholder="Enter your username"
+                  placeholder="Enter your username (default: demo)"
                 />
               </div>
 
@@ -85,8 +87,7 @@ const Login: React.FC = () => {
                   type="password"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  required
-                  placeholder="Enter your password"
+                  placeholder="Enter your password (default: demo123)"
                 />
               </div>
 

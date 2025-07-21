@@ -91,7 +91,7 @@ limiter = Limiter(
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='eventlet')
 
 # CORS configuration
-CORS(app, origins=["http://localhost:3000", "http://localhost:5173", "https://yourdomain.github.io", "https://auto-fetching-app-tunnel-0ek7s1on.devinapps.com"], supports_credentials=True)
+CORS(app, origins=["http://localhost:3000", "http://localhost:5173", "https://yourdomain.github.io", "https://auto-fetching-app-tunnel-0ek7s1on.devinapps.com", "https://auto-fetching-app-tunnel-g01s2pir.devinapps.com", "https://auto-fetching-ai-app-tunnel-dusa1o4r.devinapps.com", "https://auto-fetching-app-tunnel-mwenm14g.devinapps.com", "https://auto-fetching-app-tunnel-8nx4a43u.devinapps.com"], supports_credentials=True)
 
 # Redis connection
 try:
@@ -2205,17 +2205,32 @@ def login():
     """User login"""
     try:
         data = request.get_json()
+        logger.info(f"Login attempt - Raw data: {data}")
+        logger.info(f"Content-Type: {request.content_type}")
+        logger.info(f"Request data: {request.data}")
         
+        if not data:
+            logger.error("No JSON data received")
+            return jsonify({'error': 'No data provided'}), 400
+            
         if not data.get('username') or not data.get('password'):
+            logger.error(f"Missing credentials - username: {data.get('username')}, password: {'***' if data.get('password') else None}")
             return jsonify({'error': 'Username and password required'}), 400
         
         user = User.query.filter_by(username=data['username']).first()
+        logger.info(f"User lookup for '{data['username']}': {'Found' if user else 'Not found'}")
+        
+        if user:
+            logger.info(f"User active status: {user.is_active}")
+            password_check = user.check_password(data['password'])
+            logger.info(f"Password check result: {password_check}")
         
         if user and user.check_password(data['password']) and user.is_active:
             user.last_login = datetime.utcnow()
             db.session.commit()
             
             access_token = create_access_token(identity=str(user.id))
+            logger.info(f"Login successful for user: {user.username}")
             
             return jsonify({
                 'message': 'Login successful',
@@ -2223,6 +2238,7 @@ def login():
                 'access_token': access_token
             })
         else:
+            logger.error(f"Login failed for user: {data.get('username')}")
             return jsonify({'error': 'Invalid credentials'}), 401
             
     except Exception as e:
