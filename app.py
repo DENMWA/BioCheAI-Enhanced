@@ -91,7 +91,7 @@ limiter = Limiter(
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='eventlet')
 
 # CORS configuration
-CORS(app, origins=["http://localhost:3000", "http://localhost:5173", "https://yourdomain.github.io", "https://auto-fetching-ai-app-tunnel-le7bbyn7.devinapps.com"], supports_credentials=True)
+CORS(app, origins=["http://localhost:3000", "http://localhost:5173", "https://yourdomain.github.io", "https://auto-fetching-app-tunnel-0ek7s1on.devinapps.com"], supports_credentials=True)
 
 # Redis connection
 try:
