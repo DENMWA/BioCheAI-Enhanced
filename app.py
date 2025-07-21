@@ -91,7 +91,7 @@ limiter = Limiter(
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='eventlet')
 
 # CORS configuration
-CORS(app, origins=["http://localhost:3000", "http://localhost:5173", "https://yourdomain.github.io", "https://auto-fetching-app-tunnel-0ek7s1on.devinapps.com", "https://auto-fetching-app-tunnel-g01s2pir.devinapps.com", "https://auto-fetching-ai-app-tunnel-dusa1o4r.devinapps.com", "https://auto-fetching-app-tunnel-mwenm14g.devinapps.com", "https://auto-fetching-app-tunnel-8nx4a43u.devinapps.com"], supports_credentials=True)
+CORS(app, origins=["http://localhost:3000", "http://localhost:5173", "http://localhost:4173", "https://yourdomain.github.io", "https://auto-fetching-app-tunnel-0ek7s1on.devinapps.com", "https://auto-fetching-app-tunnel-g01s2pir.devinapps.com", "https://auto-fetching-ai-app-tunnel-dusa1o4r.devinapps.com", "https://auto-fetching-app-tunnel-mwenm14g.devinapps.com", "https://auto-fetching-app-tunnel-8nx4a43u.devinapps.com", "https://biocheai-frontend.onrender.com", "https://biocheai-backend.onrender.com"], supports_credentials=True)
 
 # Redis connection
 try:
@@ -3163,4 +3163,15 @@ def run_analysis(analysis_id, data, analysis_type):
             analysis.completed_at = datetime.utcnow()
             db.session.commit()
         return {'error': str(e)}
+
+
+if __name__ == '__main__':
+    with app.app_context():
+        db.create_all()
+    
+    # Production vs Development configuration
+    port = int(os.environ.get('PORT', 5000))
+    debug = os.environ.get('FLASK_ENV') != 'production'
+    
+    socketio.run(app, debug=debug, host='0.0.0.0', port=port, allow_unsafe_werkzeug=debug)
         

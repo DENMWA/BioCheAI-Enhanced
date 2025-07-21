@@ -19,8 +19,6 @@ import {
   Image,
   Activity,
   Link,
-  CheckCircle,
-  AlertCircle,
   Loader2,
   BarChart3,
 } from 'lucide-react';

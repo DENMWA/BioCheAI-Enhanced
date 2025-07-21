@@ -1,5 +1,5 @@
 import React from 'react';
-import { FrappeGantt } from 'frappe-gantt-react';
+import { FrappeGantt, ViewMode, Task as FrappeTask } from 'frappe-gantt-react';
 import { Task, TimelineData } from '../types';
 import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
 import { Badge } from './ui/badge';
@@ -18,15 +18,22 @@ const GanttChart: React.FC<GanttChartProps> = ({
 }) => {
   const ganttTasks = timelineData.tasks
     .filter(task => task.start_date && task.end_date)
-    .map(task => ({
-      id: task.id,
-      name: task.title,
-      start: task.start_date,
-      end: task.end_date,
-      progress: task.progress_percentage || 0,
-      dependencies: task.dependencies?.map(dep => dep.depends_on_task_id).join(',') || '',
-      custom_class: `priority-${task.priority} status-${task.status}`,
-    }));
+    .map(task => {
+      const ganttTask = new FrappeTask({
+        id: task.id,
+        name: task.title,
+        start: task.start_date,
+        end: task.end_date,
+        progress: task.progress_percentage || 0,
+        custom_class: `priority-${task.priority} status-${task.status}`
+      });
+      
+      if (task.dependencies?.length) {
+        ganttTask.setDependencies(task.dependencies.map(dep => dep.depends_on_task_id));
+      }
+      
+      return ganttTask;
+    });
 
   const handleTaskChange = (task: any) => {
     if (onTaskUpdate) {
@@ -55,7 +62,7 @@ const GanttChart: React.FC<GanttChartProps> = ({
             {ganttTasks.length > 0 ? (
               <FrappeGantt
                 tasks={ganttTasks}
-                viewMode="Month"
+                viewMode={ViewMode.Month}
                 onClick={handleTaskClick}
                 onDateChange={handleTaskChange}
               />

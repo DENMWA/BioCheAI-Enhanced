@@ -1,0 +1,45 @@
+services:
+  - type: web
+    name: biocheai-backend
+    env: python
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: python run.py
+    envVars:
+      - key: FLASK_ENV
+        value: production
+      - key: DATABASE_URL
+        generateValue: true
+      - key: SECRET_KEY
+        generateValue: true
+      - key: JWT_SECRET_KEY
+        generateValue: true
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: biocheai-redis
+          property: connectionString
+    healthCheckPath: /api/health
+    
+  - type: static
+    name: biocheai-frontend
+    buildCommand: cd biocheai-frontend && npm install && npm run build
+    staticPublishPath: ./biocheai-frontend/dist
+    envVars:
+      - key: VITE_API_BASE_URL
+        value: https://biocheai-backend.onrender.com/api
+      - key: VITE_WEBSOCKET_URL
+        value: wss://biocheai-backend.onrender.com
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
+
+  - type: redis
+    name: biocheai-redis
+    plan: starter
+    maxmemoryPolicy: allkeys-lru
+
+databases:
+  - name: biocheai-db
+    plan: starter

@@ -30,7 +30,7 @@ const CloudScaling: React.FC = () => {
   });
   const [uploadFile, setUploadFile] = useState<File | null>(null);
 
-  const { data: cloudStatus, isLoading: statusLoading } = useQuery({
+  useQuery({
     queryKey: ['cloud-status'],
     queryFn: cloudApi.getStatus,
   });

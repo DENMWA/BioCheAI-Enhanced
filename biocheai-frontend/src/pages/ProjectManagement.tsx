@@ -2,27 +2,20 @@ import React, { useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { taskApi, milestoneApi, timelineApi } from '../lib/api';
-import { websocketService } from '../lib/websocket';
 import GanttChart from '../components/GanttChart';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
+import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
 import { Textarea } from '../components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '../components/ui/dialog';
-import { Badge } from '../components/ui/badge';
-import { Progress } from '../components/ui/progress';
 import { toast } from 'sonner';
 import {
   Plus,
-  Calendar,
   Clock,
-  Users,
   Target,
   BarChart3,
-  Settings,
-  Filter,
   Loader2,
 } from 'lucide-react';
 
@@ -117,7 +110,7 @@ const ProjectManagement: React.FC = () => {
     toast.info(`Task: ${task.title} - ${task.status}`);
   };
 
-  const handleTaskUpdate = (taskId: string, start: Date, end: Date) => {
+  const handleTaskUpdate = () => {
     toast.info('Task dates updated');
   };
 

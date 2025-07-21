@@ -26,7 +26,7 @@ const Compliance: React.FC = () => {
   const [selectedFramework, setSelectedFramework] = useState('');
   const [analysisId, setAnalysisId] = useState('');
 
-  const { data: frameworks = [], isLoading: frameworksLoading } = useQuery({
+  useQuery({
     queryKey: ['compliance-frameworks'],
     queryFn: complianceApi.getFrameworks,
   });
