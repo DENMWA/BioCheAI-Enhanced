@@ -14,6 +14,7 @@ from flask_migrate import Migrate
 from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
+from flask_socketio import SocketIO, emit, join_room, leave_room
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
 from datetime import datetime, timedelta
@@ -38,6 +39,19 @@ import re
 import xml.etree.ElementTree as ET
 import random
 from io import StringIO
+import networkx as nx
+import plotly.graph_objects as go
+import plotly.express as px
+from transformers import pipeline, AutoTokenizer, AutoModel
+import torch
+import spacy
+import nltk
+from collections import defaultdict, Counter
+import boto3
+from azure.storage.blob import BlobServiceClient
+from google.cloud import storage as gcs
+import threading
+import asyncio
 
 # Initialize Flask app
 app = Flask(__name__, static_folder='build', static_url_path='')
@@ -74,6 +88,7 @@ limiter = Limiter(
     key_func=get_remote_address,
     app=app
 )
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode='eventlet')
 
 # CORS configuration
 CORS(app, origins=["http://localhost:3000", "https://yourdomain.github.io"])
@@ -142,6 +157,7 @@ class Analysis(db.Model):
     """Analysis model for storing analysis results and metadata"""
     id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    project_id = db.Column(db.String(36), db.ForeignKey('project.id'))
     analysis_type = db.Column(db.String(50), nullable=False)  # dna, rna, protein, multiomics
     title = db.Column(db.String(200))
     description = db.Column(db.Text)
@@ -166,6 +182,11 @@ class Analysis(db.Model):
     started_at = db.Column(db.DateTime)
     completed_at = db.Column(db.DateTime)
     error_message = db.Column(db.Text)
+    
+    # Relationships
+    comments = db.relationship('Comment', backref='analysis', lazy=True)
+    compliance_reports = db.relationship('ComplianceReport', backref='analysis', lazy=True)
+    multimodal_analyses = db.relationship('MultiModalAnalysis', backref='analysis', lazy=True)
     
     def to_dict(self):
         return {
@@ -203,6 +224,220 @@ class MLModel(db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     is_active = db.Column(db.Boolean, default=True)
     model_path = db.Column(db.String(500))
+
+class Project(db.Model):
+    """Project model for collaborative research"""
+    id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    name = db.Column(db.String(200), nullable=False)
+    description = db.Column(db.Text)
+    owner_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    is_public = db.Column(db.Boolean, default=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    members = db.relationship('ProjectMember', backref='project', lazy=True, cascade='all, delete-orphan')
+    analyses = db.relationship('Analysis', backref='project', lazy=True)
+    sessions = db.relationship('CollaborationSession', backref='project', lazy=True)
+
+class ProjectMember(db.Model):
+    """Project membership model"""
+    id = db.Column(db.Integer, primary_key=True)
+    project_id = db.Column(db.String(36), db.ForeignKey('project.id'), nullable=False)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    role = db.Column(db.String(20), default='member')
+    joined_at = db.Column(db.DateTime, default=datetime.utcnow)
+    
+    __table_args__ = (db.UniqueConstraint('project_id', 'user_id'),)
+
+class CollaborationSession(db.Model):
+    """Real-time collaboration session"""
+    id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    project_id = db.Column(db.String(36), db.ForeignKey('project.id'), nullable=False)
+    analysis_id = db.Column(db.String(36), db.ForeignKey('analysis.id'))
+    session_type = db.Column(db.String(50), default='analysis')
+    active_users = db.Column(db.JSON, default=list)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    ended_at = db.Column(db.DateTime)
+
+class Comment(db.Model):
+    """Comment model for collaborative discussions"""
+    id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    project_id = db.Column(db.String(36), db.ForeignKey('project.id'))
+    analysis_id = db.Column(db.String(36), db.ForeignKey('analysis.id'))
+    parent_id = db.Column(db.String(36), db.ForeignKey('comment.id'))
+    content = db.Column(db.Text, nullable=False)
+    comment_type = db.Column(db.String(20), default='general')
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    replies = db.relationship('Comment', backref=db.backref('parent', remote_side='Comment.id'), lazy=True)
+
+class Workflow(db.Model):
+    """Workflow model for no-code analysis pipelines"""
+    id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    name = db.Column(db.String(200), nullable=False)
+    description = db.Column(db.Text)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    project_id = db.Column(db.String(36), db.ForeignKey('project.id'))
+    workflow_definition = db.Column(db.JSON, nullable=False)
+    is_template = db.Column(db.Boolean, default=False)
+    is_public = db.Column(db.Boolean, default=False)
+    version = db.Column(db.String(20), default='1.0')
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    executions = db.relationship('WorkflowExecution', backref='workflow', lazy=True)
+
+class WorkflowStep(db.Model):
+    """Individual workflow step"""
+    id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    workflow_id = db.Column(db.String(36), db.ForeignKey('workflow.id'), nullable=False)
+    step_name = db.Column(db.String(100), nullable=False)
+    step_type = db.Column(db.String(50), nullable=False)
+    step_config = db.Column(db.JSON)
+    position_x = db.Column(db.Float, default=0)
+    position_y = db.Column(db.Float, default=0)
+    order_index = db.Column(db.Integer, default=0)
+
+class WorkflowExecution(db.Model):
+    """Workflow execution tracking"""
+    id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    workflow_id = db.Column(db.String(36), db.ForeignKey('workflow.id'), nullable=False)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    status = db.Column(db.String(20), default='queued')
+    input_data = db.Column(db.JSON)
+    output_data = db.Column(db.JSON)
+    execution_log = db.Column(db.JSON, default=list)
+    started_at = db.Column(db.DateTime, default=datetime.utcnow)
+    completed_at = db.Column(db.DateTime)
+    error_message = db.Column(db.Text)
+
+class LiteratureSource(db.Model):
+    """Literature source tracking"""
+    id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    title = db.Column(db.String(500), nullable=False)
+    authors = db.Column(db.JSON)
+    journal = db.Column(db.String(200))
+    publication_date = db.Column(db.Date)
+    doi = db.Column(db.String(100))
+    pmid = db.Column(db.String(20))
+    abstract = db.Column(db.Text)
+    full_text = db.Column(db.Text)
+    keywords = db.Column(db.JSON)
+    citation_count = db.Column(db.Integer, default=0)
+    relevance_score = db.Column(db.Float)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    
+    citations = db.relationship('Citation', foreign_keys='Citation.source_id', backref='source', lazy=True)
+
+class Citation(db.Model):
+    """Citation relationships between papers"""
+    id = db.Column(db.Integer, primary_key=True)
+    source_id = db.Column(db.String(36), db.ForeignKey('literature_source.id'), nullable=False)
+    cited_source_id = db.Column(db.String(36), db.ForeignKey('literature_source.id'), nullable=False)
+    citation_context = db.Column(db.Text)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+class Hypothesis(db.Model):
+    """AI-generated hypotheses"""
+    id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    project_id = db.Column(db.String(36), db.ForeignKey('project.id'))
+    hypothesis_text = db.Column(db.Text, nullable=False)
+    confidence_score = db.Column(db.Float)
+    supporting_evidence = db.Column(db.JSON)
+    generated_method = db.Column(db.String(50))
+    status = db.Column(db.String(20), default='generated')
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+class KnowledgeGraph(db.Model):
+    """Knowledge graph nodes and relationships"""
+    id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    entity_type = db.Column(db.String(50), nullable=False)
+    entity_name = db.Column(db.String(200), nullable=False)
+    entity_id = db.Column(db.String(100))
+    properties = db.Column(db.JSON)
+    relationships = db.Column(db.JSON)
+    confidence_score = db.Column(db.Float)
+    source_count = db.Column(db.Integer, default=0)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+class ComplianceReport(db.Model):
+    """Compliance reporting and tracking"""
+    id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    analysis_id = db.Column(db.String(36), db.ForeignKey('analysis.id'), nullable=False)
+    project_id = db.Column(db.String(36), db.ForeignKey('project.id'))
+    report_type = db.Column(db.String(50), nullable=False)
+    compliance_score = db.Column(db.Float)
+    violations = db.Column(db.JSON)
+    recommendations = db.Column(db.JSON)
+    status = db.Column(db.String(20), default='draft')
+    generated_at = db.Column(db.DateTime, default=datetime.utcnow)
+    submitted_at = db.Column(db.DateTime)
+    approved_at = db.Column(db.DateTime)
+
+class RegulatorySubmission(db.Model):
+    """Regulatory submission tracking"""
+    id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    project_id = db.Column(db.String(36), db.ForeignKey('project.id'), nullable=False)
+    submission_type = db.Column(db.String(50), nullable=False)
+    submission_data = db.Column(db.JSON)
+    documents = db.Column(db.JSON)
+    status = db.Column(db.String(20), default='draft')
+    submission_date = db.Column(db.DateTime)
+    response_date = db.Column(db.DateTime)
+    approval_status = db.Column(db.String(20))
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+class AuditLog(db.Model):
+    """Audit trail for compliance"""
+    id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    action = db.Column(db.String(100), nullable=False)
+    resource_type = db.Column(db.String(50))
+    resource_id = db.Column(db.String(36))
+    details = db.Column(db.JSON)
+    ip_address = db.Column(db.String(45))
+    user_agent = db.Column(db.String(500))
+    timestamp = db.Column(db.DateTime, default=datetime.utcnow)
+
+class DataSource(db.Model):
+    """Multi-modal data source tracking"""
+    id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    name = db.Column(db.String(200), nullable=False)
+    data_type = db.Column(db.String(50), nullable=False)
+    source_format = db.Column(db.String(50))
+    file_path = db.Column(db.String(500))
+    source_metadata = db.Column(db.JSON)
+    schema_info = db.Column(db.JSON)
+    quality_metrics = db.Column(db.JSON)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    
+    integrations = db.relationship('DataIntegration', backref='data_source', lazy=True)
+
+class DataIntegration(db.Model):
+    """Multi-modal data integration tracking"""
+    id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    name = db.Column(db.String(200), nullable=False)
+    data_source_id = db.Column(db.String(36), db.ForeignKey('data_source.id'), nullable=False)
+    integration_method = db.Column(db.String(50))
+    harmonization_rules = db.Column(db.JSON)
+    mapping_config = db.Column(db.JSON)
+    quality_score = db.Column(db.Float)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+class MultiModalAnalysis(db.Model):
+    """Multi-modal analysis results"""
+    id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    analysis_id = db.Column(db.String(36), db.ForeignKey('analysis.id'), nullable=False)
+    integrated_data_sources = db.Column(db.JSON)
+    cross_modal_correlations = db.Column(db.JSON)
+    integration_quality = db.Column(db.Float)
+    insights = db.Column(db.JSON)
+    visualizations = db.Column(db.JSON)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
 # =========================== ML AND AI POLICING CLASSES ===========================
 
@@ -879,11 +1114,786 @@ class DataFetchingEngine:
             return []
 
 
-# Initialize ML, AI, and new engines
+# =========================== AI LITERATURE INTELLIGENCE ENGINE ===========================
+
+class AILiteratureEngine:
+    """AI-powered literature intelligence and analysis system"""
+    
+    def __init__(self):
+        self.summarizer = None
+        self.nlp = None
+        self.knowledge_graph = nx.DiGraph()
+        self.initialize_models()
+    
+    def initialize_models(self):
+        """Initialize NLP models"""
+        try:
+            self.summarizer = pipeline("summarization", model="facebook/bart-large-cnn")
+            self.nlp = spacy.load("en_core_web_sm")
+        except Exception as e:
+            logger.warning(f"Could not load NLP models: {e}")
+    
+    def search_literature(self, query, sources=['pubmed'], max_results=50):
+        """Search literature from multiple sources"""
+        results = []
+        
+        if 'pubmed' in sources:
+            pubmed_results = self._search_pubmed(query, max_results)
+            results.extend(pubmed_results)
+        
+        return self._deduplicate_results(results)
+    
+    def _search_pubmed(self, query, max_results):
+        """Search PubMed for literature"""
+        import requests
+        
+        search_url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
+        search_params = {
+            'db': 'pubmed',
+            'term': query,
+            'retmax': max_results,
+            'retmode': 'json'
+        }
+        
+        try:
+            response = requests.get(search_url, params=search_params, timeout=30)
+            response.raise_for_status()
+            search_result = response.json()
+            
+            if 'esearchresult' not in search_result:
+                return []
+            
+            ids = search_result['esearchresult']['idlist']
+            if not ids:
+                return []
+            
+            fetch_url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
+            fetch_params = {
+                'db': 'pubmed',
+                'id': ','.join(ids),
+                'rettype': 'abstract',
+                'retmode': 'xml'
+            }
+            
+            response = requests.get(fetch_url, params=fetch_params, timeout=30)
+            response.raise_for_status()
+            
+            return self._parse_pubmed_results(response.text)
+            
+        except Exception as e:
+            logger.error(f"PubMed search error: {e}")
+            return []
+    
+    def _parse_pubmed_results(self, xml_text):
+        """Parse PubMed XML results"""
+        try:
+            root = ET.fromstring(xml_text)
+            articles = []
+            
+            for article in root.findall('.//PubmedArticle'):
+                pmid_elem = article.find('.//PMID')
+                title_elem = article.find('.//ArticleTitle')
+                abstract_elem = article.find('.//AbstractText')
+                authors_elems = article.findall('.//Author')
+                journal_elem = article.find('.//Journal/Title')
+                date_elem = article.find('.//PubDate/Year')
+                
+                authors = []
+                for author in authors_elems:
+                    lastname = author.find('LastName')
+                    forename = author.find('ForeName')
+                    if lastname is not None and forename is not None:
+                        authors.append(f"{forename.text} {lastname.text}")
+                
+                article_data = {
+                    'pmid': pmid_elem.text if pmid_elem is not None else '',
+                    'title': title_elem.text if title_elem is not None else '',
+                    'abstract': abstract_elem.text if abstract_elem is not None else '',
+                    'authors': authors,
+                    'journal': journal_elem.text if journal_elem is not None else '',
+                    'year': date_elem.text if date_elem is not None else '',
+                    'source': 'pubmed'
+                }
+                articles.append(article_data)
+            
+            return articles
+        except ET.ParseError:
+            return []
+    
+    def _deduplicate_results(self, results):
+        """Remove duplicate articles"""
+        seen_titles = set()
+        unique_results = []
+        
+        for result in results:
+            title_lower = result.get('title', '').lower()
+            if title_lower not in seen_titles and title_lower:
+                seen_titles.add(title_lower)
+                unique_results.append(result)
+        
+        return unique_results
+    
+    def summarize_literature(self, articles, max_length=150):
+        """Generate summaries for literature"""
+        if not self.summarizer:
+            return [{'summary': 'Summarization model not available'} for _ in articles]
+        
+        summaries = []
+        for article in articles:
+            try:
+                text = article.get('abstract', '') or article.get('title', '')
+                if len(text) > 50:
+                    summary = self.summarizer(text, max_length=max_length, min_length=30, do_sample=False)
+                    summaries.append({
+                        'pmid': article.get('pmid'),
+                        'title': article.get('title'),
+                        'summary': summary[0]['summary_text']
+                    })
+                else:
+                    summaries.append({
+                        'pmid': article.get('pmid'),
+                        'title': article.get('title'),
+                        'summary': text
+                    })
+            except Exception as e:
+                logger.error(f"Summarization error: {e}")
+                summaries.append({
+                    'pmid': article.get('pmid'),
+                    'title': article.get('title'),
+                    'summary': 'Summary generation failed'
+                })
+        
+        return summaries
+    
+    def extract_entities(self, text):
+        """Extract biomedical entities from text"""
+        if not self.nlp:
+            return []
+        
+        doc = self.nlp(text)
+        entities = []
+        
+        for ent in doc.ents:
+            entities.append({
+                'text': ent.text,
+                'label': ent.label_,
+                'start': ent.start_char,
+                'end': ent.end_char
+            })
+        
+        return entities
+    
+    def build_knowledge_graph(self, articles):
+        """Build knowledge graph from literature"""
+        self.knowledge_graph.clear()
+        
+        for article in articles:
+            text = f"{article.get('title', '')} {article.get('abstract', '')}"
+            entities = self.extract_entities(text)
+            
+            for entity in entities:
+                entity_text = entity['text'].lower()
+                
+                if not self.knowledge_graph.has_node(entity_text):
+                    self.knowledge_graph.add_node(entity_text, 
+                                                label=entity['label'],
+                                                count=1,
+                                                articles=[article.get('pmid')])
+                else:
+                    self.knowledge_graph.nodes[entity_text]['count'] += 1
+                    self.knowledge_graph.nodes[entity_text]['articles'].append(article.get('pmid'))
+            
+            for i, entity1 in enumerate(entities):
+                for entity2 in entities[i+1:]:
+                    e1_text = entity1['text'].lower()
+                    e2_text = entity2['text'].lower()
+                    
+                    if self.knowledge_graph.has_edge(e1_text, e2_text):
+                        self.knowledge_graph[e1_text][e2_text]['weight'] += 1
+                    else:
+                        self.knowledge_graph.add_edge(e1_text, e2_text, weight=1)
+        
+        return self.knowledge_graph
+    
+    def generate_hypotheses(self, query, articles, max_hypotheses=5):
+        """Generate research hypotheses from literature analysis"""
+        hypotheses = []
+        
+        entities = []
+        for article in articles[:10]:
+            text = f"{article.get('title', '')} {article.get('abstract', '')}"
+            article_entities = self.extract_entities(text)
+            entities.extend(article_entities)
+        
+        entity_counts = Counter([e['text'].lower() for e in entities])
+        top_entities = [entity for entity, count in entity_counts.most_common(10)]
+        
+        for i, entity1 in enumerate(top_entities[:5]):
+            for entity2 in top_entities[i+1:i+3]:
+                hypothesis = f"There may be a relationship between {entity1} and {entity2} in the context of {query}"
+                hypotheses.append({
+                    'hypothesis': hypothesis,
+                    'confidence': 0.6 + (len([a for a in articles if entity1 in a.get('abstract', '').lower() and entity2 in a.get('abstract', '').lower()]) * 0.1),
+                    'supporting_entities': [entity1, entity2],
+                    'method': 'co_occurrence_analysis'
+                })
+        
+        return hypotheses[:max_hypotheses]
+
+
+# =========================== REAL-TIME COLLABORATION ENGINE ===========================
+
+class CollaborationEngine:
+    """Real-time collaboration system"""
+    
+    def __init__(self, socketio_instance):
+        self.socketio = socketio_instance
+        self.active_sessions = {}
+        self.user_sessions = defaultdict(set)
+    
+    def create_session(self, project_id, session_type='analysis', analysis_id=None):
+        """Create a new collaboration session"""
+        session = CollaborationSession(
+            project_id=project_id,
+            session_type=session_type,
+            analysis_id=analysis_id
+        )
+        db.session.add(session)
+        db.session.commit()
+        
+        self.active_sessions[session.id] = {
+            'users': set(),
+            'created_at': datetime.utcnow(),
+            'last_activity': datetime.utcnow()
+        }
+        
+        return session.id
+    
+    def join_session(self, session_id, user_id):
+        """Add user to collaboration session"""
+        if session_id in self.active_sessions:
+            self.active_sessions[session_id]['users'].add(user_id)
+            self.active_sessions[session_id]['last_activity'] = datetime.utcnow()
+            self.user_sessions[user_id].add(session_id)
+            
+            session = CollaborationSession.query.get(session_id)
+            if session:
+                active_users = session.active_users or []
+                if user_id not in active_users:
+                    active_users.append(user_id)
+                    session.active_users = active_users
+                    db.session.commit()
+            
+            return True
+        return False
+    
+    def broadcast_to_session(self, session_id, event, data):
+        """Broadcast event to all users in session"""
+        if session_id in self.active_sessions:
+            self.socketio.emit(event, data, room=session_id)
+
+
+# =========================== NO-CODE WORKFLOW BUILDER ENGINE ===========================
+
+class WorkflowBuilderEngine:
+    """No-code workflow builder and execution engine"""
+    
+    def __init__(self):
+        self.step_types = {
+            'data_fetch': self._execute_data_fetch,
+            'data_filter': self._execute_data_filter,
+            'analysis': self._execute_analysis,
+            'visualization': self._execute_visualization,
+            'export': self._execute_export
+        }
+    
+    def create_workflow(self, name, description, user_id, workflow_definition, project_id=None):
+        """Create a new workflow"""
+        workflow = Workflow(
+            name=name,
+            description=description,
+            user_id=user_id,
+            project_id=project_id,
+            workflow_definition=workflow_definition
+        )
+        db.session.add(workflow)
+        db.session.commit()
+        return workflow.id
+    
+    def execute_workflow(self, workflow_id, input_data, user_id):
+        """Execute a workflow"""
+        workflow = Workflow.query.get(workflow_id)
+        if not workflow:
+            return {'error': 'Workflow not found'}
+        
+        execution = WorkflowExecution(
+            workflow_id=workflow_id,
+            user_id=user_id,
+            input_data=input_data,
+            status='running'
+        )
+        db.session.add(execution)
+        db.session.commit()
+        
+        try:
+            result = self._execute_workflow_steps(workflow.workflow_definition, input_data, execution.id)
+            
+            execution.status = 'completed'
+            execution.output_data = result
+            execution.completed_at = datetime.utcnow()
+            db.session.commit()
+            
+            return result
+            
+        except Exception as e:
+            execution.status = 'failed'
+            execution.error_message = str(e)
+            execution.completed_at = datetime.utcnow()
+            db.session.commit()
+            
+            return {'error': str(e)}
+    
+    def _execute_workflow_steps(self, workflow_definition, input_data, execution_id):
+        """Execute individual workflow steps"""
+        current_data = input_data
+        results = {}
+        
+        steps = sorted(workflow_definition.get('steps', []), key=lambda x: x.get('order', 0))
+        
+        for step in steps:
+            step_type = step.get('type')
+            step_config = step.get('config', {})
+            step_id = step.get('id')
+            
+            if step_type in self.step_types:
+                try:
+                    step_result = self.step_types[step_type](current_data, step_config)
+                    results[step_id] = step_result
+                    current_data = step_result.get('output', current_data)
+                    
+                except Exception as e:
+                    raise e
+            else:
+                raise ValueError(f"Unknown step type: {step_type}")
+        
+        return {
+            'final_output': current_data,
+            'step_results': results
+        }
+    
+    def _execute_data_fetch(self, input_data, config):
+        """Execute data fetching step"""
+        repository = config.get('repository')
+        params = config.get('params', {})
+        
+        data_fetching_engine = DataFetchingEngine()
+        result = data_fetching_engine.fetch_data(repository, params)
+        
+        return {'output': result, 'step_type': 'data_fetch'}
+    
+    def _execute_data_filter(self, input_data, config):
+        """Execute data filtering step"""
+        filter_type = config.get('filter_type', 'column')
+        filter_config = config.get('filter_config', {})
+        
+        if isinstance(input_data, dict) and 'data' in input_data:
+            data = input_data['data']
+            
+            if filter_type == 'column' and isinstance(data, list):
+                column = filter_config.get('column')
+                value = filter_config.get('value')
+                operator = filter_config.get('operator', 'equals')
+                
+                filtered_data = []
+                for item in data:
+                    if isinstance(item, dict) and column in item:
+                        if operator == 'equals' and item[column] == value:
+                            filtered_data.append(item)
+                        elif operator == 'contains' and value in str(item[column]):
+                            filtered_data.append(item)
+                
+                return {'output': {'data': filtered_data}, 'step_type': 'data_filter'}
+        
+        return {'output': input_data, 'step_type': 'data_filter'}
+    
+    def _execute_analysis(self, input_data, config):
+        """Execute analysis step"""
+        analysis_type = config.get('analysis_type', 'basic')
+        
+        ml_engine = BioCheAIMLEngine()
+        
+        if analysis_type in ['dna', 'rna', 'protein', 'multiomics']:
+            features = ml_engine.extract_features(input_data, analysis_type)
+            predictions = ml_engine.predict(features, analysis_type)
+            
+            return {
+                'output': {
+                    'features': features,
+                    'predictions': predictions
+                },
+                'step_type': 'analysis'
+            }
+        
+        return {'output': input_data, 'step_type': 'analysis'}
+    
+    def _execute_visualization(self, input_data, config):
+        """Execute visualization step"""
+        viz_type = config.get('viz_type', 'scatter')
+        
+        viz_data = {
+            'type': viz_type,
+            'data': input_data,
+            'config': config
+        }
+        
+        return {'output': viz_data, 'step_type': 'visualization'}
+    
+    def _execute_export(self, input_data, config):
+        """Execute export step"""
+        export_format = config.get('format', 'json')
+        
+        export_data = {
+            'format': export_format,
+            'data': input_data,
+            'exported_at': datetime.utcnow().isoformat()
+        }
+        
+        return {'output': export_data, 'step_type': 'export'}
+
+
+# =========================== MULTI-MODAL DATA INTEGRATION ENGINE ===========================
+
+class MultiModalEngine:
+    """Multi-modal data integration and analysis engine"""
+    
+    def __init__(self):
+        self.supported_formats = {
+            'omics': ['csv', 'tsv', 'json', 'fasta', 'fastq'],
+            'clinical': ['csv', 'json', 'xml'],
+            'imaging': ['dicom', 'nifti', 'png', 'jpg'],
+            'literature': ['json', 'xml', 'txt']
+        }
+    
+    def register_data_source(self, name, data_type, source_format, file_path, metadata=None):
+        """Register a new data source"""
+        data_source = DataSource(
+            name=name,
+            data_type=data_type,
+            source_format=source_format,
+            file_path=file_path,
+            metadata=metadata or {},
+            schema_info=self._analyze_schema(file_path, source_format),
+            quality_metrics=self._calculate_quality_metrics(file_path, source_format)
+        )
+        db.session.add(data_source)
+        db.session.commit()
+        return data_source.id
+    
+    def _analyze_schema(self, file_path, source_format):
+        """Analyze data schema"""
+        try:
+            if source_format in ['csv', 'tsv']:
+                df = pd.read_csv(file_path, nrows=5)
+                return {
+                    'columns': list(df.columns),
+                    'dtypes': df.dtypes.to_dict(),
+                    'shape': df.shape
+                }
+            elif source_format == 'json':
+                with open(file_path, 'r') as f:
+                    data = json.load(f)
+                    if isinstance(data, list) and len(data) > 0:
+                        return {
+                            'keys': list(data[0].keys()) if isinstance(data[0], dict) else [],
+                            'type': 'array_of_objects'
+                        }
+                    elif isinstance(data, dict):
+                        return {
+                            'keys': list(data.keys()),
+                            'type': 'object'
+                        }
+        except Exception as e:
+            logger.error(f"Schema analysis error: {e}")
+        
+        return {}
+    
+    def _calculate_quality_metrics(self, file_path, source_format):
+        """Calculate data quality metrics"""
+        try:
+            if source_format in ['csv', 'tsv']:
+                df = pd.read_csv(file_path)
+                return {
+                    'completeness': (1 - df.isnull().sum().sum() / (df.shape[0] * df.shape[1])),
+                    'row_count': len(df),
+                    'column_count': len(df.columns),
+                    'duplicate_rows': df.duplicated().sum()
+                }
+        except Exception as e:
+            logger.error(f"Quality metrics error: {e}")
+        
+        return {}
+    
+    def create_integration(self, name, data_source_ids, integration_method='concatenation'):
+        """Create data integration"""
+        integration = DataIntegration(
+            name=name,
+            integration_method=integration_method,
+            harmonization_rules=self._generate_harmonization_rules(data_source_ids),
+            mapping_config=self._generate_mapping_config(data_source_ids),
+            quality_score=0.8
+        )
+        db.session.add(integration)
+        db.session.commit()
+        return integration.id
+    
+    def _generate_harmonization_rules(self, data_source_ids):
+        """Generate harmonization rules for data integration"""
+        rules = {
+            'column_mapping': {},
+            'value_transformations': {},
+            'unit_conversions': {}
+        }
+        
+        common_mappings = {
+            'id': ['ID', 'identifier', 'sample_id', 'patient_id'],
+            'age': ['Age', 'age_years', 'patient_age'],
+            'gender': ['Gender', 'sex', 'patient_gender'],
+            'expression': ['expression_level', 'expr', 'value']
+        }
+        
+        for standard_name, variants in common_mappings.items():
+            rules['column_mapping'][standard_name] = variants
+        
+        return rules
+    
+    def _generate_mapping_config(self, data_source_ids):
+        """Generate mapping configuration"""
+        return {
+            'join_keys': ['id', 'sample_id', 'patient_id'],
+            'merge_strategy': 'outer',
+            'conflict_resolution': 'latest'
+        }
+
+
+# =========================== REGULATORY COMPLIANCE ENGINE ===========================
+
+class RegulatoryEngine:
+    """Regulatory compliance and submission engine"""
+    
+    def __init__(self):
+        self.compliance_frameworks = {
+            'gdpr': self._check_gdpr_compliance,
+            'hipaa': self._check_hipaa_compliance,
+            'fda': self._check_fda_compliance,
+            'ema': self._check_ema_compliance
+        }
+    
+    def generate_compliance_report(self, analysis_id, framework_type):
+        """Generate compliance report for analysis"""
+        analysis = Analysis.query.get(analysis_id)
+        if not analysis:
+            return {'error': 'Analysis not found'}
+        
+        if framework_type not in self.compliance_frameworks:
+            return {'error': f'Unsupported framework: {framework_type}'}
+        
+        compliance_check = self.compliance_frameworks[framework_type]
+        result = compliance_check(analysis)
+        
+        report = ComplianceReport(
+            analysis_id=analysis_id,
+            project_id=analysis.project_id,
+            report_type=framework_type,
+            compliance_score=result['score'],
+            violations=result['violations'],
+            recommendations=result['recommendations']
+        )
+        db.session.add(report)
+        db.session.commit()
+        
+        return {
+            'report_id': report.id,
+            'compliance_score': result['score'],
+            'violations': result['violations'],
+            'recommendations': result['recommendations']
+        }
+    
+    def _check_gdpr_compliance(self, analysis):
+        """Check GDPR compliance"""
+        violations = []
+        recommendations = []
+        
+        data_str = json.dumps(analysis.input_data) if analysis.input_data else ''
+        
+        if re.search(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b', data_str):
+            violations.append('Personal email addresses detected')
+            recommendations.append('Remove or anonymize email addresses')
+        
+        if 'consent' not in data_str.lower():
+            violations.append('No explicit consent documentation found')
+            recommendations.append('Document user consent for data processing')
+        
+        score = max(0, 1.0 - (len(violations) * 0.3))
+        
+        return {
+            'score': score,
+            'violations': violations,
+            'recommendations': recommendations
+        }
+    
+    def _check_hipaa_compliance(self, analysis):
+        """Check HIPAA compliance"""
+        violations = []
+        recommendations = []
+        
+        data_str = json.dumps(analysis.input_data) if analysis.input_data else ''
+        
+        phi_patterns = [
+            r'\b\d{3}-\d{2}-\d{4}\b',
+            r'\b\d{3}-\d{3}-\d{4}\b',
+            r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
+        ]
+        
+        for pattern in phi_patterns:
+            if re.search(pattern, data_str):
+                violations.append('Potential PHI detected')
+                recommendations.append('Remove or de-identify personal health information')
+                break
+        
+        score = max(0, 1.0 - (len(violations) * 0.4))
+        
+        return {
+            'score': score,
+            'violations': violations,
+            'recommendations': recommendations
+        }
+    
+    def _check_fda_compliance(self, analysis):
+        """Check FDA compliance"""
+        violations = []
+        recommendations = []
+        
+        if not analysis.ml_predictions or not analysis.confidence_score:
+            violations.append('Insufficient validation metrics')
+            recommendations.append('Provide comprehensive validation and confidence metrics')
+        
+        if analysis.confidence_score and analysis.confidence_score < 0.8:
+            violations.append('Low confidence score for regulatory submission')
+            recommendations.append('Improve model performance before submission')
+        
+        score = max(0, 1.0 - (len(violations) * 0.3))
+        
+        return {
+            'score': score,
+            'violations': violations,
+            'recommendations': recommendations
+        }
+    
+    def _check_ema_compliance(self, analysis):
+        """Check EMA compliance"""
+        violations = []
+        recommendations = []
+        
+        if not analysis.results or 'methodology' not in str(analysis.results):
+            violations.append('Insufficient methodology documentation')
+            recommendations.append('Document analysis methodology thoroughly')
+        
+        score = max(0, 1.0 - (len(violations) * 0.3))
+        
+        return {
+            'score': score,
+            'violations': violations,
+            'recommendations': recommendations
+        }
+
+
+# =========================== CLOUD SCALABILITY ENGINE ===========================
+
+class CloudEngine:
+    """Cloud scalability and distributed computing engine"""
+    
+    def __init__(self):
+        self.cloud_providers = {
+            'aws': self._setup_aws,
+            'gcp': self._setup_gcp,
+            'azure': self._setup_azure
+        }
+        self.active_instances = {}
+    
+    def setup_cloud_provider(self, provider, credentials):
+        """Setup cloud provider connection"""
+        if provider not in self.cloud_providers:
+            return {'error': f'Unsupported provider: {provider}'}
+        
+        try:
+            client = self.cloud_providers[provider](credentials)
+            return {'status': 'success', 'client': client}
+        except Exception as e:
+            return {'error': str(e)}
+    
+    def _setup_aws(self, credentials):
+        """Setup AWS connection"""
+        return boto3.client('ec2', 
+                          aws_access_key_id=credentials.get('access_key'),
+                          aws_secret_access_key=credentials.get('secret_key'),
+                          region_name=credentials.get('region', 'us-east-1'))
+    
+    def _setup_gcp(self, credentials):
+        """Setup GCP connection"""
+        return gcs.Client.from_service_account_json(credentials.get('service_account_path'))
+    
+    def _setup_azure(self, credentials):
+        """Setup Azure connection"""
+        return BlobServiceClient(account_url=credentials.get('account_url'),
+                               credential=credentials.get('credential'))
+    
+    def scale_analysis(self, analysis_id, target_instances=2):
+        """Scale analysis across multiple cloud instances"""
+        analysis = Analysis.query.get(analysis_id)
+        if not analysis:
+            return {'error': 'Analysis not found'}
+        
+        scaling_result = {
+            'analysis_id': analysis_id,
+            'target_instances': target_instances,
+            'status': 'scaled',
+            'instances': []
+        }
+        
+        for i in range(target_instances):
+            instance_id = f"instance_{i}_{analysis_id}"
+            scaling_result['instances'].append({
+                'id': instance_id,
+                'status': 'running',
+                'progress': 0
+            })
+        
+        return scaling_result
+    
+    def upload_to_cloud(self, file_path, provider='aws', bucket_name='biocheai-data'):
+        """Upload file to cloud storage"""
+        try:
+            if provider == 'aws':
+                s3_client = boto3.client('s3')
+                s3_client.upload_file(file_path, bucket_name, os.path.basename(file_path))
+                return {'status': 'success', 'url': f's3://{bucket_name}/{os.path.basename(file_path)}'}
+            
+            return {'error': 'Provider not implemented'}
+        except Exception as e:
+            return {'error': str(e)}
+
+
+# Initialize all engines
 ml_engine = BioCheAIMLEngine()
 ai_police = AIPoliceEngine()
 auto_repair_engine = AutoRepairEngine()
 data_fetching_engine = DataFetchingEngine()
+literature_engine = AILiteratureEngine()
+collaboration_engine = CollaborationEngine(socketio)
+workflow_engine = WorkflowBuilderEngine()
+multimodal_engine = MultiModalEngine()
+regulatory_engine = RegulatoryEngine()
+cloud_engine = CloudEngine()
 
 # =========================== HELPER FUNCTIONS ===========================
 
@@ -1208,10 +2218,481 @@ def get_user_analyses():
         logger.error(f"Get analyses error: {str(e)}")
         return jsonify({'error': 'Failed to get analyses'}), 500
 
+
+# =========================== NEW API ENDPOINTS FOR ADVANCED FEATURES ===========================
+
+@app.route('/api/literature/search', methods=['POST'])
+@jwt_required()
+@limiter.limit("20 per hour")
+def search_literature():
+    """Search literature using AI intelligence"""
+    try:
+        user_id = int(get_jwt_identity())
+        data = request.get_json()
+        
+        query = data.get('query')
+        if not query:
+            return jsonify({'error': 'Query is required'}), 400
+        
+        sources = data.get('sources', ['pubmed'])
+        max_results = data.get('max_results', 20)
+        
+        results = literature_engine.search_literature(query, sources, max_results)
+        
+        return jsonify({
+            'status': 'success',
+            'query': query,
+            'results': results,
+            'total_found': len(results)
+        })
+        
+    except Exception as e:
+        logger.error(f"Literature search error: {str(e)}")
+        return jsonify({'error': 'Literature search failed'}), 500
+
+@app.route('/api/literature/summarize', methods=['POST'])
+@jwt_required()
+@limiter.limit("10 per hour")
+def summarize_literature():
+    """Generate AI summaries for literature"""
+    try:
+        user_id = int(get_jwt_identity())
+        data = request.get_json()
+        
+        articles = data.get('articles', [])
+        if not articles:
+            return jsonify({'error': 'Articles are required'}), 400
+        
+        max_length = data.get('max_length', 150)
+        summaries = literature_engine.summarize_literature(articles, max_length)
+        
+        return jsonify({
+            'status': 'success',
+            'summaries': summaries
+        })
+        
+    except Exception as e:
+        logger.error(f"Literature summarization error: {str(e)}")
+        return jsonify({'error': 'Summarization failed'}), 500
+
+@app.route('/api/literature/hypotheses', methods=['POST'])
+@jwt_required()
+@limiter.limit("5 per hour")
+def generate_hypotheses():
+    """Generate research hypotheses from literature"""
+    try:
+        user_id = int(get_jwt_identity())
+        data = request.get_json()
+        
+        query = data.get('query')
+        articles = data.get('articles', [])
+        max_hypotheses = data.get('max_hypotheses', 5)
+        
+        if not query or not articles:
+            return jsonify({'error': 'Query and articles are required'}), 400
+        
+        hypotheses = literature_engine.generate_hypotheses(query, articles, max_hypotheses)
+        
+        for hyp in hypotheses:
+            hypothesis = Hypothesis(
+                user_id=user_id,
+                hypothesis_text=hyp['hypothesis'],
+                confidence_score=hyp['confidence'],
+                supporting_evidence=hyp.get('supporting_entities', []),
+                generated_method=hyp.get('method', 'ai_analysis')
+            )
+            db.session.add(hypothesis)
+        
+        db.session.commit()
+        
+        return jsonify({
+            'status': 'success',
+            'hypotheses': hypotheses
+        })
+        
+    except Exception as e:
+        logger.error(f"Hypothesis generation error: {str(e)}")
+        return jsonify({'error': 'Hypothesis generation failed'}), 500
+
+@app.route('/api/projects', methods=['POST'])
+@jwt_required()
+@limiter.limit("10 per hour")
+def create_project():
+    """Create a new collaborative project"""
+    try:
+        user_id = int(get_jwt_identity())
+        data = request.get_json()
+        
+        name = data.get('name')
+        if not name:
+            return jsonify({'error': 'Project name is required'}), 400
+        
+        project = Project(
+            name=name,
+            description=data.get('description'),
+            owner_id=user_id,
+            is_public=data.get('is_public', False)
+        )
+        db.session.add(project)
+        db.session.commit()
+        
+        member = ProjectMember(
+            project_id=project.id,
+            user_id=user_id,
+            role='owner'
+        )
+        db.session.add(member)
+        db.session.commit()
+        
+        return jsonify({
+            'status': 'success',
+            'project_id': project.id,
+            'name': project.name
+        }), 201
+        
+    except Exception as e:
+        logger.error(f"Project creation error: {str(e)}")
+        return jsonify({'error': 'Project creation failed'}), 500
+
+@app.route('/api/projects', methods=['GET'])
+@jwt_required()
+def get_user_projects():
+    """Get user's projects"""
+    try:
+        user_id = int(get_jwt_identity())
+        
+        projects = db.session.query(Project).join(ProjectMember).filter(
+            ProjectMember.user_id == user_id
+        ).all()
+        
+        project_list = []
+        for project in projects:
+            member = ProjectMember.query.filter_by(
+                project_id=project.id, 
+                user_id=user_id
+            ).first()
+            
+            project_list.append({
+                'id': project.id,
+                'name': project.name,
+                'description': project.description,
+                'role': member.role if member else 'viewer',
+                'created_at': project.created_at.isoformat(),
+                'member_count': len(project.members)
+            })
+        
+        return jsonify({
+            'projects': project_list,
+            'total': len(project_list)
+        })
+        
+    except Exception as e:
+        logger.error(f"Get projects error: {str(e)}")
+        return jsonify({'error': 'Failed to get projects'}), 500
+
+@app.route('/api/collaboration/sessions', methods=['POST'])
+@jwt_required()
+def create_collaboration_session():
+    """Create a new collaboration session"""
+    try:
+        user_id = int(get_jwt_identity())
+        data = request.get_json()
+        
+        project_id = data.get('project_id')
+        if not project_id:
+            return jsonify({'error': 'Project ID is required'}), 400
+        
+        session_id = collaboration_engine.create_session(
+            project_id=project_id,
+            session_type=data.get('session_type', 'analysis'),
+            analysis_id=data.get('analysis_id')
+        )
+        
+        return jsonify({
+            'status': 'success',
+            'session_id': session_id
+        }), 201
+        
+    except Exception as e:
+        logger.error(f"Collaboration session error: {str(e)}")
+        return jsonify({'error': 'Session creation failed'}), 500
+
+@app.route('/api/workflows', methods=['POST'])
+@jwt_required()
+@limiter.limit("20 per hour")
+def create_workflow():
+    """Create a new workflow"""
+    try:
+        user_id = int(get_jwt_identity())
+        data = request.get_json()
+        
+        name = data.get('name')
+        workflow_definition = data.get('workflow_definition')
+        
+        if not name or not workflow_definition:
+            return jsonify({'error': 'Name and workflow definition are required'}), 400
+        
+        workflow_id = workflow_engine.create_workflow(
+            name=name,
+            description=data.get('description'),
+            user_id=user_id,
+            workflow_definition=workflow_definition,
+            project_id=data.get('project_id')
+        )
+        
+        return jsonify({
+            'status': 'success',
+            'workflow_id': workflow_id
+        }), 201
+        
+    except Exception as e:
+        logger.error(f"Workflow creation error: {str(e)}")
+        return jsonify({'error': 'Workflow creation failed'}), 500
+
+@app.route('/api/workflows/<workflow_id>/execute', methods=['POST'])
+@jwt_required()
+@limiter.limit("10 per hour")
+def execute_workflow(workflow_id):
+    """Execute a workflow"""
+    try:
+        user_id = int(get_jwt_identity())
+        data = request.get_json()
+        
+        input_data = data.get('input_data', {})
+        
+        result = workflow_engine.execute_workflow(workflow_id, input_data, user_id)
+        
+        return jsonify({
+            'status': 'success',
+            'result': result
+        })
+        
+    except Exception as e:
+        logger.error(f"Workflow execution error: {str(e)}")
+        return jsonify({'error': 'Workflow execution failed'}), 500
+
+@app.route('/api/workflow-templates', methods=['GET'])
+@jwt_required()
+def get_workflow_templates():
+    """Get available workflow templates"""
+    templates = [
+        {
+            'id': 'basic_analysis',
+            'name': 'Basic Genomic Analysis',
+            'description': 'Fetch data, run analysis, generate visualization',
+            'steps': [
+                {'type': 'data_fetch', 'name': 'Fetch Genomic Data'},
+                {'type': 'analysis', 'name': 'Run ML Analysis'},
+                {'type': 'visualization', 'name': 'Generate Plots'},
+                {'type': 'export', 'name': 'Export Results'}
+            ]
+        },
+        {
+            'id': 'literature_review',
+            'name': 'Literature Review Pipeline',
+            'description': 'Search literature, summarize, generate hypotheses',
+            'steps': [
+                {'type': 'literature_search', 'name': 'Search PubMed'},
+                {'type': 'summarization', 'name': 'Generate Summaries'},
+                {'type': 'hypothesis_generation', 'name': 'Generate Hypotheses'},
+                {'type': 'export', 'name': 'Export Report'}
+            ]
+        }
+    ]
+    
+    return jsonify({
+        'templates': templates,
+        'total': len(templates)
+    })
+
+@app.route('/api/data-sources', methods=['POST'])
+@jwt_required()
+def register_data_source():
+    """Register a new data source"""
+    try:
+        user_id = int(get_jwt_identity())
+        data = request.get_json()
+        
+        name = data.get('name')
+        data_type = data.get('data_type')
+        source_format = data.get('source_format')
+        file_path = data.get('file_path')
+        
+        if not all([name, data_type, source_format, file_path]):
+            return jsonify({'error': 'All fields are required'}), 400
+        
+        source_id = multimodal_engine.register_data_source(
+            name=name,
+            data_type=data_type,
+            source_format=source_format,
+            file_path=file_path,
+            metadata=data.get('metadata')
+        )
+        
+        return jsonify({
+            'status': 'success',
+            'data_source_id': source_id
+        }), 201
+        
+    except Exception as e:
+        logger.error(f"Data source registration error: {str(e)}")
+        return jsonify({'error': 'Data source registration failed'}), 500
+
+@app.route('/api/data-integration', methods=['POST'])
+@jwt_required()
+def create_data_integration():
+    """Create multi-modal data integration"""
+    try:
+        user_id = int(get_jwt_identity())
+        data = request.get_json()
+        
+        name = data.get('name')
+        data_source_ids = data.get('data_source_ids', [])
+        
+        if not name or not data_source_ids:
+            return jsonify({'error': 'Name and data source IDs are required'}), 400
+        
+        integration_id = multimodal_engine.create_integration(
+            name=name,
+            data_source_ids=data_source_ids,
+            integration_method=data.get('integration_method', 'concatenation')
+        )
+        
+        return jsonify({
+            'status': 'success',
+            'integration_id': integration_id
+        }), 201
+        
+    except Exception as e:
+        logger.error(f"Data integration error: {str(e)}")
+        return jsonify({'error': 'Data integration failed'}), 500
+
+@app.route('/api/compliance/reports', methods=['POST'])
+@jwt_required()
+def generate_compliance_report():
+    """Generate compliance report"""
+    try:
+        user_id = int(get_jwt_identity())
+        data = request.get_json()
+        
+        analysis_id = data.get('analysis_id')
+        framework_type = data.get('framework_type')
+        
+        if not analysis_id or not framework_type:
+            return jsonify({'error': 'Analysis ID and framework type are required'}), 400
+        
+        result = regulatory_engine.generate_compliance_report(analysis_id, framework_type)
+        
+        return jsonify({
+            'status': 'success',
+            'result': result
+        })
+        
+    except Exception as e:
+        logger.error(f"Compliance report error: {str(e)}")
+        return jsonify({'error': 'Compliance report generation failed'}), 500
+
+@app.route('/api/cloud/scale', methods=['POST'])
+@jwt_required()
+@limiter.limit("5 per hour")
+def scale_analysis():
+    """Scale analysis to cloud instances"""
+    try:
+        user_id = int(get_jwt_identity())
+        data = request.get_json()
+        
+        analysis_id = data.get('analysis_id')
+        target_instances = data.get('target_instances', 2)
+        
+        if not analysis_id:
+            return jsonify({'error': 'Analysis ID is required'}), 400
+        
+        result = cloud_engine.scale_analysis(analysis_id, target_instances)
+        
+        return jsonify({
+            'status': 'success',
+            'result': result
+        })
+        
+    except Exception as e:
+        logger.error(f"Cloud scaling error: {str(e)}")
+        return jsonify({'error': 'Cloud scaling failed'}), 500
+
+@socketio.on('join_session')
+def handle_join_session(data):
+    """Handle user joining collaboration session"""
+    session_id = data.get('session_id')
+    user_id = data.get('user_id')
+    
+    if session_id and user_id:
+        join_room(session_id)
+        collaboration_engine.join_session(session_id, user_id)
+        
+        emit('user_joined', {
+            'user_id': user_id,
+            'session_id': session_id,
+            'timestamp': datetime.utcnow().isoformat()
+        }, room=session_id)
+
+@socketio.on('leave_session')
+def handle_leave_session(data):
+    """Handle user leaving collaboration session"""
+    session_id = data.get('session_id')
+    user_id = data.get('user_id')
+    
+    if session_id and user_id:
+        leave_room(session_id)
+        collaboration_engine.leave_session(session_id, user_id)
+        
+        emit('user_left', {
+            'user_id': user_id,
+            'session_id': session_id,
+            'timestamp': datetime.utcnow().isoformat()
+        }, room=session_id)
+
+@socketio.on('analysis_update')
+def handle_analysis_update(data):
+    """Handle real-time analysis updates"""
+    session_id = data.get('session_id')
+    analysis_data = data.get('analysis_data')
+    user_id = data.get('user_id')
+    
+    if session_id and analysis_data:
+        emit('analysis_updated', {
+            'user_id': user_id,
+            'analysis_data': analysis_data,
+            'timestamp': datetime.utcnow().isoformat()
+        }, room=session_id, include_self=False)
+
+@socketio.on('comment_added')
+def handle_comment_added(data):
+    """Handle new comment in collaboration session"""
+    session_id = data.get('session_id')
+    comment_data = data.get('comment_data')
+    user_id = data.get('user_id')
+    
+    if session_id and comment_data:
+        comment = Comment(
+            user_id=user_id,
+            project_id=comment_data.get('project_id'),
+            analysis_id=comment_data.get('analysis_id'),
+            content=comment_data.get('content'),
+            comment_type=comment_data.get('type', 'general')
+        )
+        db.session.add(comment)
+        db.session.commit()
+        
+        emit('comment_received', {
+            'comment_id': comment.id,
+            'user_id': user_id,
+            'content': comment.content,
+            'timestamp': comment.created_at.isoformat()
+        }, room=session_id)
+
 if __name__ == '__main__':
     with app.app_context():
         db.create_all()
-    app.run(debug=True, host='0.0.0.0', port=5000)
+    socketio.run(app, debug=True, host='0.0.0.0', port=5000)
 
 def run_analysis(analysis_id, data, analysis_type):
     """Run analysis synchronously (simplified version)"""
