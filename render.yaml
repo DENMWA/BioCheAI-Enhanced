@@ -25,14 +25,20 @@ services:
     
   - type: static
     name: biocheai-frontend
-    rootDir: .
+    plan: starter
     buildCommand: cd biocheai-frontend && npm ci && npm run build
-    staticPublishPath: ./biocheai-frontend/dist
+    staticPublishPath: biocheai-frontend/dist
     envVars:
       - key: VITE_API_BASE_URL
-        value: https://biocheai-backend.onrender.com/api
+        fromService:
+          type: web
+          name: biocheai-backend
+          envVarKey: RENDER_EXTERNAL_URL
       - key: VITE_WEBSOCKET_URL
-        value: wss://biocheai-backend.onrender.com
+        fromService:
+          type: web
+          name: biocheai-backend
+          envVarKey: RENDER_EXTERNAL_URL
     routes:
       - type: rewrite
         source: /*
