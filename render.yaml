@@ -2,7 +2,7 @@ services:
   - type: web
     name: biocheai-backend
     env: python
-    plan: starter
+    plan: free
     runtime: python
     rootDir: .
     buildCommand: pip install -r requirements.txt
@@ -26,7 +26,7 @@ services:
   - type: web
     name: biocheai-frontend
     runtime: static
-    plan: starter
+    plan: free
     buildCommand: cd biocheai-frontend && npm ci && npm run build
     staticPublishPath: biocheai-frontend/dist
     envVars:
@@ -47,7 +47,7 @@ services:
 
   - type: redis
     name: biocheai-redis
-    plan: starter
+    plan: free
     maxmemoryPolicy: allkeys-lru
     ipAllowList:
       - source: 0.0.0.0/0
@@ -55,4 +55,4 @@ services:
 
 databases:
   - name: biocheai-db
-    plan: starter
+    plan: free
