@@ -2,7 +2,7 @@ services:
   - type: web
     name: biocheai-backend
     env: python
-    plan: starter
+    plan: standard
     runtime: python
     rootDir: .
     buildCommand: pip install -r requirements.txt
@@ -26,7 +26,7 @@ services:
   - type: web
     name: biocheai-frontend
     runtime: static
-    plan: starter
+    plan: standard
     buildCommand: cd biocheai-frontend && npm ci && npm run build
     staticPublishPath: biocheai-frontend/dist
     envVars:
